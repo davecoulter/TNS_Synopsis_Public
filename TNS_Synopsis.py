@@ -17,8 +17,8 @@ from astroquery.irsa_dust import IrsaDust
 import datetime
 
 reg_obj = b"https://wis-tns.weizmann.ac.il/object/(\w+)"
-reg_ra = b"RA[\=a-zA-Z\<\>\" ]+(\d{2}:\d{2}:\d{2}\.\d+)"
-reg_dec = b"DEC[\=a-zA-Z\<\>\" ]+((?:\+|\-)\d{2}:\d{2}:\d{2}\.\d+)"
+reg_ra = b"RA[\=\*a-zA-Z\<\>\" ]+(\d{2}:\d{2}:\d{2}\.\d+)"
+reg_dec = b"DEC[\=\*a-zA-Z\<\>\" ]+((?:\+|\-)\d{2}:\d{2}:\d{2}\.\d+)"
 
 def try_parse_float(s):
     try:
@@ -107,8 +107,9 @@ class tns_obj:
         
         comments = []
         lnd = self.last_nondetection()
-        
-        if not np.any([(h.decode("utf-8") == self.TNS_Host) for h in self.NED_Nearest_host]):
+
+        #.decode("utf-8")
+        if not np.any([(h == self.TNS_Host) for h in self.NED_Nearest_host]):
             comments.append("-TNS and NED hosts disagree.")
 
         if not (np.any(self.NED_Nearest_z == self.TNS_Host_Z) or np.any(self.NED_Nearest_z == self.Z)):
@@ -253,7 +254,7 @@ def WriteOutput(tns_objs):
                 for j in range(len(tns_objs[i].NED_Nearest_host)):
 
                     formatted_text = ("NED Host: %s; Separation [arcmin]: %s; a_v: %s; z: %s" % \
-                                       (tns_objs[i].NED_Nearest_host[sindex[j]].decode("utf-8"),
+                                       (tns_objs[i].NED_Nearest_host[sindex[j]], #.decode("utf-8")
                                         tns_objs[i].NED_Nearest_sep[sindex[j]],
                                         tns_objs[i].A_v[sindex[j]],
                                         tns_objs[i].NED_Nearest_z[sindex[j]]
@@ -266,196 +267,247 @@ def WriteOutput(tns_objs):
     with open("TNS_Outputs.txt", 'w') as t_o:
         t_o.write(fname1)
 
-def ProcessTNSEmails():
-    body = ""
-    html = ""
-    tns_objs = []
-    radius = 5 # arcminutes
+class processTNS():
+    def __init__(self):
+        self.verbose = None
 
-    try:
+    def add_options(self, parser=None, usage=None, config=None):
+        import optparse
+        if parser == None:
+            parser = optparse.OptionParser(usage=usage, conflict_handler="resolve")
+
+        # The basics
+        parser.add_option('-v', '--verbose', action="count", dest="verbose",default=1)
+        parser.add_option('--clobber', default=False, action="store_true",
+                          help='clobber output file')
+        parser.add_option('-s','--settingsfile', default=None, type="string",
+                          help='settings file (login/password info)')
+
+        if config:
+            parser.add_option('--login', default=config.get('main','login'), type="string",
+                              help='gmail login (default=%default)')
+            parser.add_option('--password', default=config.get('main','password'), type="string",
+                              help='gmail password (default=%default)')
+        else:
+            parser.add_option('--login', default="", type="string",
+                              help='gmail login (default=%default)')
+            parser.add_option('--password', default="", type="string",
+                              help='gmail password (default=%default)')
+        return(parser)
+
+    def ProcessTNSEmails(self):
+        body = ""
+        html = ""
+        tns_objs = []
+        radius = 5 # arcminutes
+
+        try:
         
-        ########################################################
-        # Get All Email
-        ########################################################
+            ########################################################
+            # Get All Email
+            ########################################################
         
-        mail =  imaplib.IMAP4_SSL('imap.gmail.com', 993) #, ssl_context=ctx
+            mail =  imaplib.IMAP4_SSL('imap.gmail.com', 993) #, ssl_context=ctx
         
-        ## NOTE: This is not the way to do this. You will want to implement an industry-standard login step ##
-        mail.login('<some login>', '<some password>')
+            ## NOTE: This is not the way to do this. You will want to implement an industry-standard login step ##
+            mail.login(self.login, self.password)
 
-        mail.select('TNS', readonly=False)
-        retcode, msg_ids_bytes = mail.search(None, '(UNSEEN)')
-        msg_ids = msg_ids_bytes[0].decode("utf-8").split(" ")
-        
-        if retcode != "OK" or msg_ids[0] == "":
-            raise ValueError("No messages")
+            mail.select('TNS', readonly=False)
+            retcode, msg_ids_bytes = mail.search(None, '(UNSEEN)')
+            msg_ids = msg_ids_bytes[0].decode("utf-8").split(" ")
 
-        for i in range(len(msg_ids)):
-            ########################################################
-            # Iterate Over Email
-            ########################################################
-            typ, data = mail.fetch(msg_ids[i],'(RFC822)')
-            # Mark messages as "Seen"
-            result, wdata = mail.store(msg_ids[i], '+FLAGS', '\\Seen')
-            msg = email.message_from_bytes(data[0][1])
+            if retcode != "OK" or msg_ids[0] == "":
+                raise ValueError("No messages")
 
-            if msg.is_multipart():
-                for part in msg.walk():
-                    ctype = part.get_content_type()
-                    cdispo = str(part.get('Content-Disposition'))
-
-                    # skip any text/plain (txt) attachments
-                    if ctype == 'text/plain' and 'attachment' not in cdispo:
-                        body = part.get_payload(decode=True)  # decode
-                        break
-            # not multipart - i.e. plain text, no attachments, keeping fingers crossed
-            else:
-                body = msg.get_payload(decode=True)
-
-            objs = re.findall(reg_obj,body)
-            print(objs)
-            ras = re.findall(reg_ra,body)
-            print(ras)
-            decs = re.findall(reg_dec,body)
-            print(decs)
-            
-            ########################################################
-            # For Item in Email, Get TNS
-            ########################################################
-            
-            for j in range(len(objs)):
-                print("Object: %s\nRA: %s\nDEC: %s" % (objs[j],ras[j],decs[j]))
-                
-                # Get TNS page
-                int_name=""
-                evt_type=""
-                z=""
-                host_name=""
-                host_redshift = ""
-                ned_url = ""
-            
-                tns_url = "https://wis-tns.weizmann.ac.il/object/" + objs[j].decode("utf-8")
-                print(tns_url)
-                with urllib.request.urlopen(tns_url) as tns:
-                    html = tns.read()
-                    soup = BeautifulSoup(html, "lxml")
-                    
-                    # Get Internal Name, Type, Disc. Date, Disc. Mag, Redshift, Host Name, Host Redshift, NED URL
-                    int_name = soup.find('td', attrs={'class':'cell-internal_name'}).text
-                    evt_type = soup.find('div', attrs={'class':'field-type'}).find('div').find('b').text
-                    disc_date = soup.find('div', attrs={'class':'field field-discoverydate'}).find('div').find('b').text
-                    disc_mag = soup.find('div', attrs={'class':'field field-discoverymag'}).find('div').find('b').text
-                    z = soup.find('div', attrs={'class':'field-redshift'}).find('div').find('b').text
-                    
-                    hn_div = soup.find('div', attrs={'class':'field-hostname'})
-                    if hn_div is not None:
-                        host_name = hn_div.find('div').find('b').text
-
-                    z_div = soup.find('div', attrs={'class':'field-host_redshift'})
-                    if z_div is not None:
-                        host_redshift = z_div.find('div').find('b').text
-
-                    ned_url = soup.find('div', attrs={'class':'additional-links clearfix'}).find('a')['href']
-                    
-                    # Get photometry records
-                    table = soup.findAll('table', attrs={'class':'photometry-results-table'})
-                    prs = []
-                    for k in range(len(table)):
-
-                        table_body = table[k].find('tbody')
-                        rows = table_body.find_all('tr')
-                        print(type(rows))
-
-                        for l in range(len(rows)):
-                            prs.append(phot_row(rows[l]))
-                    
+            for i in range(len(msg_ids)):
                 ########################################################
-                # For Item in Email, Get NED
+                # Iterate Over Email
                 ########################################################
-                ra_j = ras[j].decode("utf-8")
-                dec_j = decs[j].decode("utf-8")
+                typ, data = mail.fetch(msg_ids[i],'(RFC822)')
+                # Mark messages as "Seen"
+                result, wdata = mail.store(msg_ids[i], '+FLAGS', '\\Seen')
+                msg = email.message_from_bytes(data[0][1])
+
+                if msg.is_multipart():
+                    for part in msg.walk():
+                        ctype = part.get_content_type()
+                        cdispo = str(part.get('Content-Disposition'))
+
+                        # skip any text/plain (txt) attachments
+                        if ctype == 'text/plain' and 'attachment' not in cdispo:
+                            body = part.get_payload(decode=True)  # decode
+                            break
+                # not multipart - i.e. plain text, no attachments, keeping fingers crossed
+                else:
+                    body = msg.get_payload(decode=True)
+
+                objs = re.findall(reg_obj,body)
+                print(objs)
+                ras = re.findall(reg_ra,body)
+                print(ras)
+                decs = re.findall(reg_dec,body)
+                print(decs)
             
-                co = coordinates.SkyCoord(ra=ra_j, dec=dec_j, unit=(u.hour, u.deg), frame='fk4', equinox='J2000.0')
-                ned_region_table = None
+                ########################################################
+                # For Item in Email, Get TNS
+                ########################################################
+            
+                for j in range(len(objs)):
+                    print("Object: %s\nRA: %s\nDEC: %s" % (objs[j].decode('utf-8'),
+                                                           ras[j].decode('utf-8'),
+                                                           decs[j].decode('utf-8')))
                 
-                gal_candidates = 0
-                radius = 5
-                while (radius < 11 and gal_candidates < 21): 
-                    try:
-                        print("Radius: %s" % radius)
-                        ned_region_table = Ned.query_region(co, radius=radius*u.arcmin, equinox='J2000.0')
-                        gal_candidates = len(ned_region_table)
-                        radius += 1
-                        print("Result length: %s" % gal_candidates)
-                    except Exception as e:
-                        radius += 1
-                        print("NED exception: %s" % e.args)
+                    # Get TNS page
+                    int_name=""
+                    evt_type=""
+                    z=""
+                    host_name=""
+                    host_redshift = ""
+                    ned_url = ""
+            
+                    tns_url = "https://wis-tns.weizmann.ac.il/object/" + objs[j].decode("utf-8")
+                    print(tns_url)
+                    with urllib.request.urlopen(tns_url) as tns:
+                        html = tns.read()
+                        soup = BeautifulSoup(html, "lxml")
+                    
+                        # Get Internal Name, Type, Disc. Date, Disc. Mag, Redshift, Host Name, Host Redshift, NED URL
+                        int_name = soup.find('td', attrs={'class':'cell-internal_name'}).text
+                        evt_type = soup.find('div', attrs={'class':'field-type'}).find('div').find('b').text
+                        disc_date = soup.find('div', attrs={'class':'field field-discoverydate'}).find('div').find('b').text
+                        disc_mag = soup.find('div', attrs={'class':'field field-discoverymag'}).find('div').find('b').text
+                        z = soup.find('div', attrs={'class':'field-redshift'}).find('div').find('b').text
+                    
+                        hn_div = soup.find('div', attrs={'class':'field-hostname'})
+                        if hn_div is not None:
+                            host_name = hn_div.find('div').find('b').text
 
-                galaxy_names = []
-                galaxy_zs = []
-                galaxy_seps = []
-                galaxies_with_z = []
-                a_vs = []
-                if ned_region_table is not None:
-                    print("NED Matches: %s" % len(ned_region_table))
+                        z_div = soup.find('div', attrs={'class':'field-host_redshift'})
+                        if z_div is not None:
+                            host_redshift = z_div.find('div').find('b').text
 
-                    galaxy_candidates = np.asarray([entry.decode("utf-8") for entry in ned_region_table["Type"]])
-                    galaxies_indices = np.where(galaxy_candidates == 'G')
-                    galaxies = ned_region_table[galaxies_indices]
+                        ned_url = soup.find('div', attrs={'class':'additional-links clearfix'}).find('a')['href']
+                    
+                        # Get photometry records
+                        table = soup.findAll('table', attrs={'class':'photometry-results-table'})
+                        prs = []
+                        for k in range(len(table)):
 
-                    print("Galaxy Candidates: %s" % len(galaxies))
+                            table_body = table[k].find('tbody')
+                            rows = table_body.find_all('tr')
+                            print(type(rows))
 
-                    # Get Galaxy name, z, separation for each galaxy with z
-                    for l in range(len(galaxies)):
-                        if isinstance(galaxies[l]["Redshift"], float):
-                            galaxies_with_z.append(galaxies[l])
-                            galaxy_names.append(galaxies[l]["Object Name"])
-                            galaxy_zs.append(galaxies[l]["Redshift"])
-                            galaxy_seps.append(galaxies[l]["Distance (arcmin)"])
+                            for l in range(len(rows)):
+                                prs.append(phot_row(rows[l]))
+                    
+                    ########################################################
+                    # For Item in Email, Get NED
+                    ########################################################
+                    ra_j = ras[j].decode("utf-8")
+                    dec_j = decs[j].decode("utf-8")
+            
+                    co = coordinates.SkyCoord(ra=ra_j, dec=dec_j, unit=(u.hour, u.deg), frame='fk4', equinox='J2000.0')
+                    ned_region_table = None
+                
+                    gal_candidates = 0
+                    radius = 5
+                    while (radius < 11 and gal_candidates < 21): 
+                        try:
+                            print("Radius: %s" % radius)
+                            ned_region_table = Ned.query_region(co, radius=radius*u.arcmin, equinox='J2000.0')
+                            gal_candidates = len(ned_region_table)
+                            radius += 1
+                            print("Result length: %s" % gal_candidates)
+                        except Exception as e:
+                            radius += 1
+                            print("NED exception: %s" % e.args)
+
+                    galaxy_names = []
+                    galaxy_zs = []
+                    galaxy_seps = []
+                    galaxies_with_z = []
+                    a_vs = []
+                    if ned_region_table is not None:
+                        print("NED Matches: %s" % len(ned_region_table))
+
+                        galaxy_candidates = np.asarray([entry.decode("utf-8") for entry in ned_region_table["Type"]])
+                        galaxies_indices = np.where(galaxy_candidates == 'G')
+                        galaxies = ned_region_table[galaxies_indices]
+                        
+                        print("Galaxy Candidates: %s" % len(galaxies))
+
+                        # Get Galaxy name, z, separation for each galaxy with z
+                        for l in range(len(galaxies)):
+                            if isinstance(galaxies[l]["Redshift"], float):
+                                galaxies_with_z.append(galaxies[l])
+                                galaxy_names.append(galaxies[l]["Object Name"])
+                                galaxy_zs.append(galaxies[l]["Redshift"])
+                                galaxy_seps.append(galaxies[l]["Distance (arcmin)"])
 
 
-                    print("Galaxies with z: %s" % len(galaxies_with_z))
-                    # Get Dust in LoS for each galaxy with z
-                    if len(galaxies_with_z) > 0:
-                        for l in range(len(galaxies_with_z)):
-                            co_l = coordinates.SkyCoord(ra=galaxies_with_z[l]["RA(deg)"], 
-                                                        dec=galaxies_with_z[l]["DEC(deg)"], 
-                                                        unit=(u.deg, u.deg), frame='fk4', equinox='J2000.0')
+                        print("Galaxies with z: %s" % len(galaxies_with_z))
+                        # Get Dust in LoS for each galaxy with z
+                        if len(galaxies_with_z) > 0:
+                            for l in range(len(galaxies_with_z)):
+                                co_l = coordinates.SkyCoord(ra=galaxies_with_z[l]["RA(deg)"], 
+                                                            dec=galaxies_with_z[l]["DEC(deg)"], 
+                                                            unit=(u.deg, u.deg), frame='fk4', equinox='J2000.0')
 
-                            dust_table_l = IrsaDust.get_extinction_table(co_l)
+                                dust_table_l = IrsaDust.get_extinction_table(co_l)
 
-                            a_vs.append(dust_table_l["A_SandF"][np.where(dust_table_l["Filter_name"] == "CTIO V")][0])
-                    else:
-                        print("No NED Galaxy hosts with z")
+                                a_vs.append(dust_table_l["A_SandF"][np.where(dust_table_l["Filter_name"] == "CTIO V")][0])
+                        else:
+                            print("No NED Galaxy hosts with z")
 
-                tns_objs.append(tns_obj(name = objs[j].decode("utf-8"),
-                                        tns_url = tns_url,
-                                        internal_name = int_name,
-                                        event_type = evt_type,
-                                        ra = ras[j].decode("utf-8"),
-                                        dec = decs[j].decode("utf-8"),
-                                        a_v = a_vs,
-                                        z = z,
-                                        tns_host = host_name, 
-                                        tns_host_z = host_redshift,
-                                        ned_nearest_host = galaxy_names, 
-                                        ned_nearest_z = galaxy_zs,
-                                        ned_nearest_sep = galaxy_seps,
-                                        discovery_date = disc_date,
-                                        phot_rows = prs, 
-                                        disc_mag = disc_mag
-                                       ))
+                    tns_objs.append(tns_obj(name = objs[j].decode("utf-8"),
+                                            tns_url = tns_url,
+                                            internal_name = int_name,
+                                            event_type = evt_type,
+                                            ra = ras[j].decode("utf-8"),
+                                            dec = decs[j].decode("utf-8"),
+                                            a_v = a_vs,
+                                            z = z,
+                                            tns_host = host_name, 
+                                            tns_host_z = host_redshift,
+                                            ned_nearest_host = galaxy_names, 
+                                            ned_nearest_z = galaxy_zs,
+                                            ned_nearest_sep = galaxy_seps,
+                                            discovery_date = disc_date,
+                                            phot_rows = prs, 
+                                            disc_mag = disc_mag
+                                            ))
 
-    except ValueError as err:
-        print("%s. Exiting..." % err.args)
-        mail.close()
-        mail.logout()
-        del mail
+        except ValueError as err:
+            print("%s. Exiting..." % err.args)
+            mail.close()
+            mail.logout()
+            del mail
 
-    WriteOutput(tns_objs)
-    print("Process done.")
+        WriteOutput(tns_objs)
+        print("Process done.")
 
 
 if __name__ == "__main__":
     # execute only if run as a script
-    ProcessTNSEmails()
+
+    import optparse
+    import configparser
+
+    usagestring = "TNS_Synopsis.py <options>"
+    
+    tnsproc = processTNS()
+
+    # read in the options from the param file and the command line
+    # some convoluted syntax here, making it so param file is not required
+    parser = tnsproc.add_options(usage=usagestring)
+    options,  args = parser.parse_args()
+    if options.settingsfile:
+        config = configparser.ConfigParser()
+        config.read(options.settingsfile)
+    else: config=None
+    parser = tnsproc.add_options(usage=usagestring,config=config)
+    options,  args = parser.parse_args()
+
+    tnsproc.login = options.login
+    tnsproc.password = options.password
+    tnsproc.ProcessTNSEmails()
