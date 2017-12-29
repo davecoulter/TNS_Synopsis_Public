@@ -17,8 +17,8 @@ from astroquery.irsa_dust import IrsaDust
 import datetime
 
 reg_obj = b"https://wis-tns.weizmann.ac.il/object/(\w+)"
-reg_ra = b"RA[\=a-zA-Z\<\>\" ]+(\d{2}:\d{2}:\d{2}\.\d+)"
-reg_dec = b"DEC[\=a-zA-Z\<\>\" ]+((?:\+|\-)\d{2}:\d{2}:\d{2}\.\d+)"
+reg_ra = b"\>\sRA[\=\*a-zA-Z\<\>\" ]+(\d{2}:\d{2}:\d{2}\.\d+)"
+reg_dec = b"\*\,\\r\\nDEC[\=\*a-zA-Z\<\>\" ]+((?:\+|\-)\d{2}:\d{2}:\d{2}\.\d+)"
 
 def try_parse_float(s):
     try:
